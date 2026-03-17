@@ -26,42 +26,37 @@ paths:
           schema:
             type: string
             maxLength: 256
-          description: Secret for authentication
+          description: Watch secret that authorises this SSE connection
       responses:
         200:
           description: Server-Sent Events stream for enrollment status
           content:
             text/event-stream:
               schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    enum: [PENDING, APPROVED, DENIED, EXPIRED, TOO_MANY_CONNECTIONS, INVALID, NOT_FOUND, FORBIDDEN, INTERRUPTED]
-                  challengeId:
-                    type: string
-                  expiresAt:
-                    type: string
-                  resolvedAt:
-                    type: string
+                $ref: '#/components/schemas/EnrollmentSseEvent'
   /enroll/complete:
     post:
       summary: Complete device enrollment
+      description: >
+        Called by the mobile device after receiving the enrollment token. The
+        device submits a signed JWT that carries the device public key and
+        push-provider details; on success the credential is persisted in
+        Keycloak and the browser-side enrollment flow is unblocked.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              required:
+                - token
               properties:
                 token:
                   type: string
-                  description: JWT token for enrollment completion
-              required:
-                - token
+                  description: Signed device JWT for enrollment completion
       responses:
         200:
-          description: Enrollment successful
+          description: Enrollment completed successfully
           content:
             application/json:
               schema:
@@ -71,66 +66,51 @@ paths:
                     type: string
                     example: enrolled
         400:
-          description: Bad request (e.g., invalid token)
+          description: Bad request (e.g., missing or malformed token)
         403:
-          description: Forbidden (e.g., signature mismatch)
+          description: Forbidden (e.g., signature mismatch or nonce replay)
         404:
-          description: Challenge not found
+          description: Enrollment challenge not found or already resolved
   /login/pending:
     get:
       summary: List pending login challenges for a user
+      description: >
+        Returns all open authentication challenges for the authenticated device
+        owner. The device polls this endpoint (or uses the SSE stream) to
+        discover challenges it should display to the user.
       parameters:
         - name: userId
           in: query
           required: true
           schema:
             type: string
-          description: The user ID
+          description: Keycloak user ID of the device owner
       security:
         - DPoP: []
       responses:
         200:
-          description: List of pending challenges
+          description: List of pending login challenges (may be empty)
           content:
             application/json:
               schema:
                 type: object
+                required:
+                  - challenges
                 properties:
                   challenges:
                     type: array
                     items:
-                      type: object
-                      properties:
-                        userId:
-                          type: string
-                        username:
-                          type: string
-                        cid:
-                          type: string
-                        expiresAt:
-                          type: integer
-                          format: int64
-                        clientId:
-                          type: string
-                        clientName:
-                          type: string
-                        userVerification:
-                          type: object
-                          properties:
-                            type:
-                              type: string
-                              enum: [number_match, pin]
-                            numbers:
-                              type: array
-                              items:
-                                type: string
-                            pinLength:
-                              type: integer
+                      $ref: '#/components/schemas/LoginChallenge'
         403:
-          description: Forbidden (e.g., user mismatch)
+            $ref: '#/components/responses/DPoPProofError'
   /login/challenges/{cid}/respond:
     post:
       summary: Respond to a login challenge
+      description: >
+        Submits the device's approval or denial decision for a pending
+        authentication challenge. The request body carries a signed JWT that
+        includes the challenge ID, credential ID, action, and — when user
+        verification is required — the user-supplied verification value.
       parameters:
         - name: cid
           in: path
@@ -145,17 +125,17 @@ paths:
           application/json:
             schema:
               type: object
+              required:
+                - token
               properties:
                 token:
                   type: string
-                  description: JWT token for challenge response
-              required:
-                - token
+                  description: Signed device JWT for challenge response
       security:
         - DPoP: []
       responses:
         200:
-          description: Challenge response successful
+          description: Challenge response accepted
           content:
             application/json:
               schema:
@@ -164,15 +144,20 @@ paths:
                   status:
                     type: string
                     enum: [approved, denied]
+                    description: Outcome of the challenge
         400:
-          description: Bad request (e.g., invalid token or action)
+          description: Bad request (e.g., invalid token, unknown action)
         403:
-          description: Forbidden (e.g., mismatch)
+          $ref: '#/components/responses/DPoPProofError'
         404:
-          description: Challenge not found
+          description: Challenge not found or already resolved
   /login/challenges/{cid}/events:
     get:
       summary: Stream login challenge events via Server-Sent Events
+      description: >
+        Long-lived SSE connection that pushes challenge status updates to the
+        browser. The browser opens this stream while waiting for the user to
+        approve or deny the push notification on their device.
       parameters:
         - name: cid
           in: path
@@ -186,49 +171,65 @@ paths:
           schema:
             type: string
             maxLength: 256
-          description: Secret for authentication
+          description: Watch secret that authorises this SSE connection
       responses:
         200:
           description: Server-Sent Events stream for login challenge status
           content:
             text/event-stream:
               schema:
+                $ref: '#/components/schemas/LoginChallengeSseEvent'
+  /login/lockout:
+    post:
+      summary: Report excessive failed attempts and lock out the user
+      description: >
+        Called by the device when it detects too many failed authentication
+        attempts. Triggers the configured lockout handler (e.g., disabling the
+        user account).
+      security:
+        - DPoP: []
+      responses:
+        200:
+          description: Lockout processed
+          content:
+            application/json:
+              schema:
                 type: object
                 properties:
                   status:
                     type: string
-                    enum: [PENDING, APPROVED, DENIED, EXPIRED, TOO_MANY_CONNECTIONS, INVALID, NOT_FOUND, FORBIDDEN, BAD_TYPE, INTERRUPTED]
-                  challengeId:
-                    type: string
-                  expiresAt:
-                    type: string
-                  clientId:
-                    type: string
-                  resolvedAt:
-                    type: string
+                    example: locked
+        403:
+          $ref: '#/components/responses/DPoPProofError'
   /device/push-provider:
     put:
-      summary: Update device push provider
+      summary: Update device push-provider registration
+      description: >
+        Updates the push-provider token and type stored for the authenticated
+        device credential. Should be called whenever the OS issues a new
+        push-notification token.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              required:
+                - pushProviderId
               properties:
                 pushProviderId:
                   type: string
                   maxLength: 256
+                  description: New push-provider token (e.g., APNs or FCM registration token)
                 pushProviderType:
                   type: string
                   maxLength: 256
-              required:
-                - pushProviderId
+                  description: Push-provider type identifier (e.g., `apns`, `fcm`, `log`)
       security:
         - DPoP: []
       responses:
         200:
-          description: Push provider updated
+          description: Push-provider registration updated
           content:
             application/json:
               schema:
@@ -237,30 +238,37 @@ paths:
                   status:
                     type: string
                     enum: [updated, unchanged]
+                    description: >
+                      `updated` when the stored values changed; `unchanged` when
+                      the submitted values were identical to the stored ones.
         400:
-          description: Bad request
+          description: Bad request (e.g., missing pushProviderId)
         403:
-          description: Forbidden
+          $ref: '#/components/responses/DPoPProofError'
   /device/rotate-key:
     put:
-      summary: Rotate device key
+      summary: Rotate device signing key
+      description: >
+        Replaces the public key stored for the authenticated device credential.
+        The new key must be submitted as a JWK; subsequent DPoP proofs must be
+        signed with the corresponding private key.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              required:
+                - publicKeyJwk
               properties:
                 publicKeyJwk:
                   type: object
-                  description: JWK public key object
-              required:
-                - publicKeyJwk
+                  description: New public key in JWK format
       security:
         - DPoP: []
       responses:
         200:
-          description: Key rotated
+          description: Key rotated successfully
           content:
             application/json:
               schema:
@@ -270,9 +278,9 @@ paths:
                     type: string
                     example: rotated
         400:
-          description: Bad request (e.g., invalid JWK)
+          description: Bad request (e.g., unsupported key type or invalid JWK)
         403:
-          description: Forbidden
+          $ref: '#/components/responses/DPoPProofError'
 security:
   - DPoP: []
 components:
@@ -280,4 +288,135 @@ components:
     DPoP:
       type: http
       scheme: dpop
-      description: Demonstrating Proof-of-Possession (DPoP) bound access token
+      description: >
+        Demonstrating Proof-of-Possession (RFC 9449) bound access token.
+        Every request must include both an `Authorization: DPoP <token>` header
+        and a `DPoP: <proof-jwt>` header signed with the device key.
+  responses:
+    DPoPProofError:
+      description: DPoP proof failed validation (invalid/missing proof, htm/htu mismatch, signature failure, DPoP binding mismatch, replay)
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "DPoP proof invalid"
+              error_description:
+                type: string
+                example: "DPoP proof htm mismatch"
+  schemas:
+    LoginChallenge:
+      type: object
+      description: A pending authentication challenge waiting for a device response.
+      required:
+        - userId
+        - username
+        - cid
+        - expiresAt
+        - createdAt
+        - clientId
+      properties:
+        userId:
+          type: string
+          description: Keycloak user ID of the authenticating user.
+        username:
+          type: string
+          description: Human-readable username of the authenticating user.
+        cid:
+          type: string
+          format: uuid
+          description: >
+            Challenge ID. Used to build the respond URL
+            (`/login/challenges/{cid}/respond`) and matched against the `cid`
+            claim in the confirm token.
+        expiresAt:
+          type: integer
+          format: int64
+          description: Unix epoch second at which the challenge expires and can no longer be accepted.
+        createdAt:
+          type: integer
+          format: int64
+          description: >
+            Unix epoch second at which the challenge was created. Allows the
+            device to show the user how long ago the login was initiated.
+        clientId:
+          type: string
+          description: Keycloak client ID of the application the user is logging into.
+        clientName:
+          type: string
+          description: Human-readable display name of the client application.
+        userVerification:
+          $ref: '#/components/schemas/UserVerificationInfo'
+    UserVerificationInfo:
+      type: object
+      description: >
+        User-verification details that the device must present to the user
+        before submitting a response. Absent or null when user verification is
+        not required (`none` mode).
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum: [number_match, pin]
+          description: >
+            Verification mode. `number_match` — the user picks the matching
+            number from a list; `pin` — the user enters a numeric PIN of the
+            configured length.
+        numbers:
+          type: array
+          description: >
+            Candidate numbers shown to the user (only present for
+            `number_match`). Exactly one of these equals the value displayed in
+            the browser; the user must identify and select it.
+          items:
+            type: string
+        pinLength:
+          type: integer
+          description: >
+            Length of the PIN the user must enter (only present for `pin`).
+    EnrollmentSseEvent:
+      type: object
+      description: Server-Sent Event payload for an enrollment challenge stream.
+      properties:
+        status:
+          type: string
+          enum: [PENDING, APPROVED, DENIED, EXPIRED, TOO_MANY_CONNECTIONS, INVALID, NOT_FOUND, FORBIDDEN, INTERRUPTED]
+          description: Current status of the enrollment challenge.
+        challengeId:
+          type: string
+          format: uuid
+          description: The enrollment challenge ID.
+        expiresAt:
+          type: string
+          format: date-time
+          description: ISO-8601 timestamp at which the enrollment challenge expires.
+        resolvedAt:
+          type: string
+          format: date-time
+          description: ISO-8601 timestamp at which the challenge was resolved, if applicable.
+    LoginChallengeSseEvent:
+      type: object
+      description: Server-Sent Event payload for a login challenge stream.
+      properties:
+        status:
+          type: string
+          enum: [PENDING, APPROVED, DENIED, EXPIRED, TOO_MANY_CONNECTIONS, INVALID, NOT_FOUND, FORBIDDEN, BAD_TYPE, INTERRUPTED]
+          description: Current status of the login challenge.
+        challengeId:
+          type: string
+          format: uuid
+          description: The login challenge ID.
+        expiresAt:
+          type: string
+          format: date-time
+          description: ISO-8601 timestamp at which the login challenge expires.
+        clientId:
+          type: string
+          description: Keycloak client ID of the application the user is logging into.
+        resolvedAt:
+          type: string
+          format: date-time
+          description: ISO-8601 timestamp at which the challenge was resolved, if applicable.

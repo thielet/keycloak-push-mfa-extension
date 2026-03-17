@@ -49,6 +49,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -616,6 +617,36 @@ class PushMfaIntegrationIT {
                 refreshedChallenge.challengeId(),
                 PushMfaConstants.CHALLENGE_APPROVE);
         pushSession.completePushChallenge(refreshedChallenge.formAction());
+    }
+
+    /**
+     * Verifies that the {@code GET push-mfa/login/pending} response includes a {@code createdAt}
+     * Unix epoch-second timestamp for each challenge, and that the value falls within the time
+     * window bracketing the login submission.
+     */
+    @Test
+    void pendingChallengeIncludesCreatedAt() throws Exception {
+        DeviceClient deviceClient = enrollDevice();
+        BrowserSession pushSession = new BrowserSession(baseUri);
+
+        long beforeLogin = Instant.now().getEpochSecond();
+        HtmlPage waitingPage =
+                pushSession.submitLogin(pushSession.startAuthorization("test-app"), TEST_USERNAME, TEST_PASSWORD);
+        long afterLogin = Instant.now().getEpochSecond();
+        BrowserSession.DeviceChallenge confirm = pushSession.extractDeviceChallenge(waitingPage);
+
+        JsonNode challenge = deviceClient.fetchPendingChallenges().get(0);
+        assertEquals(confirm.challengeId(), challenge.path("cid").asText());
+
+        long createdAt = challenge.path("createdAt").asLong(0);
+        assertTrue(createdAt > 0, () -> "createdAt must be a positive epoch second but was: " + createdAt);
+        assertTrue(
+                createdAt >= beforeLogin && createdAt <= afterLogin + 1,
+                () -> "createdAt=" + createdAt + " should be within [" + beforeLogin + ", " + (afterLogin + 1) + "]");
+
+        deviceClient.respondToChallenge(
+                confirm.confirmToken(), confirm.challengeId(), PushMfaConstants.CHALLENGE_APPROVE);
+        pushSession.completePushChallenge(confirm.formAction());
     }
 
     @Test

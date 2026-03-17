@@ -237,6 +237,7 @@ public class PushMfaResource {
                                 device.user().getUsername(),
                                 ch.getId(),
                                 ch.getExpiresAt().getEpochSecond(),
+                                ch.getCreatedAt().getEpochSecond(),
                                 ch.getClientId(),
                                 resolveClientName(ch.getClientId()),
                                 buildUserVerificationInfo(ch)))
@@ -747,11 +748,30 @@ public class PushMfaResource {
 
     record EnrollmentCompleteRequest(@JsonProperty("token") String token) {}
 
+    /**
+     * A pending authentication challenge returned by the {@code GET push-mfa/login/pending}
+     * endpoint.
+     *
+     * @param userId           Keycloak user ID of the authenticating user.
+     * @param username         Human-readable username of the authenticating user.
+     * @param cid              Challenge ID; used to construct the respond URL and included in the
+     *                         confirm token as the {@code cid} claim.
+     * @param expiresAt        Unix epoch second at which the challenge expires and can no longer be
+     *                         accepted.
+     * @param createdAt        Unix epoch second at which the challenge was created; allows the
+     *                         device to show the user how long ago the login was initiated.
+     * @param clientId         Keycloak client ID of the application the user is logging into.
+     * @param clientName       Human-readable name of the client application, suitable for display
+     *                         in the push notification.
+     * @param userVerification User-verification details (type and associated data) that the device
+     *                         must present to the user before submitting a response.
+     */
     record LoginChallenge(
             @JsonProperty("userId") String userId,
             @JsonProperty("username") String username,
             @JsonProperty("cid") String cid,
             @JsonProperty("expiresAt") long expiresAt,
+            @JsonProperty("createdAt") long createdAt,
             @JsonProperty("clientId") String clientId,
             @JsonProperty("clientName") String clientName,
             @JsonProperty("userVerification") UserVerificationInfo userVerification) {}
